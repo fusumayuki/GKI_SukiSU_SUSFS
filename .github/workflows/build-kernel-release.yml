@@ -11,12 +11,12 @@ on:
         description: 'Build a12 5.10?'
         required: true
         type: boolean
-        default: true
+        default: false
       build_a13_510:
         description: 'Build a13 5.10?'
         required: true
         type: boolean
-        default: true
+        default: false
       build_a13_515:
         description: 'Build a13 5.15?'
         required: true
@@ -26,22 +26,22 @@ on:
         description: 'Build a14 5.15?'
         required: true
         type: boolean
-        default: true
+        default: false
       build_a14_61:
         description: 'Build a14 6.1?'
         required: true
         type: boolean
-        default: true
+        default: false
       build_a15_66:
         description: 'Build a15  6.6?'
         required: true
         type: boolean
-        default: true
+        default: false
       make_release:
         description: 'Do you want to create a release?'
         required: true
         type: boolean
-        default: true
+        default: false
       kernelsu_variant:
         description: "Choose KernelSU"
         required: true
