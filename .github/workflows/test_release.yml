@@ -15,7 +15,7 @@ on:
         description: 'Do you want to create a release?'
         required: true
         type: boolean
-        default: true
+        default: false
       kernels_to_build:
         description: |
           Comma-separated list of kernels to build/release, e.g.:
@@ -23,7 +23,7 @@ on:
           or "all" to build every kernel.
         required: true
         type: string
-        default: 'all'
+        default: 'a13-5.15'
       kernelsu_variant:
         description: "Select KernelSU"
         required: true
@@ -61,12 +61,12 @@ on:
         description: "是否启用内核层面阻止对关键分区/设备节点的非法写入(LSM)？"
         required: true
         type: boolean
-        default: false
+        default: true
       get_manager:
         description: 'Get the latest KSU Manager at the same time?'
         required: true
         type: boolean
-        default: false
+        default: true
 
 jobs:
   get_manager:
@@ -359,7 +359,7 @@ jobs:
             git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git suki-tmp
             cd suki-tmp
             KSU_GIT_VERSION=$(git rev-list --count HEAD)
-            KSU_VERSION=$((10000 + KSU_GIT_VERSION + 700))
+            KSU_VERSION=$((40000 + KSU_GIT_VERSION - 2815))
             echo "SukiSU version: $KSU_VERSION"
             cd ..
             rm -rf suki-tmp
