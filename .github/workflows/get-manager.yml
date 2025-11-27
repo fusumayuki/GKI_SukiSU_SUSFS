@@ -7,8 +7,9 @@ on:
   workflow_call: # This allows this workflow to be called from another workflow
     inputs:
       kernelsu_variant:
-        required: true
+        required: false
         type: string
+        default: SukiSU
 
 jobs:
   get_ksu_manager:
@@ -39,7 +40,7 @@ jobs:
             git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
             cd SukiSU-Ultra
             KSU_GIT_VERSION=$(git rev-list --count HEAD)
-            KSU_VERSION=$((10000 + KSU_GIT_VERSION + 700))
+            KSU_VERSION=$((40000 + KSU_GIT_VERSION - 2815))
             echo $KSU_VERSION
             echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
           else
@@ -52,15 +53,17 @@ jobs:
             echo "KernelSU Next..."
             REPO="KernelSU-Next/KernelSU-Next"
             FILENAME="build-manager-ci.yml"
+            BRANCH="next"
           elif [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ]; then
             echo "SukiSU..."
             REPO="SukiSU-Ultra/SukiSU-Ultra"
             FILENAME="build-manager.yml"
+            BRANCH="main"
           fi
 
           # 获取最新成功构建的 ID
           BUILD_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/$REPO/actions/workflows/$FILENAME/runs?status=success" | \
+          "https://api.github.com/repos/$REPO/actions/workflows/$FILENAME/runs?status=success&branch=$BRANCH" | \
           jq -r '.workflow_runs[0].id')
           echo 'BUILD_ID=$BUILD_ID'
           # 获取该构建的 Artifacts
@@ -69,9 +72,9 @@ jobs:
           echo 'ARTIFACTS=$ARTIFACTS'
           # 获取 Manager 文件的下载链接
           if [ "${{ inputs.kernelsu_variant }}" == "Next" ]; then
-            DOWNLOAD_URL=$(echo "$ARTIFACTS" | jq -r '.artifacts[] | select(.name | contains("Manager")) | .archive_download_url')
+            DOWNLOAD_URL=$(echo "$ARTIFACTS" | jq -r '.artifacts[] | select(.name == "Manager") | .archive_download_url')
           elif [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ]; then
-            DOWNLOAD_URL=$(echo "$ARTIFACTS" | jq -r '.artifacts[] | select(.name | contains("Manager")) | .archive_download_url')
+            DOWNLOAD_URL=$(echo "$ARTIFACTS" | jq -r '.artifacts[] | select(.name == "Manager") | .archive_download_url')
           fi
 
           # 下载 Manager 文件
@@ -80,7 +83,7 @@ jobs:
           unzip *.zip
 
       - name: 上传编译资产
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ inputs.kernelsu_variant }}-Manager(${{ env.KSU_VERSION }})
           path: |
