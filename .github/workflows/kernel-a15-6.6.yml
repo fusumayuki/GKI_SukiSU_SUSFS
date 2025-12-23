@@ -6,18 +6,14 @@ permissions:
 on:
   workflow_call:  # This allows this workflow to be called from another workflow
     inputs:
-      make_release:
-        required: true
-        type: boolean
-        default: true
       kernelsu_variant:
-        required: true
+        required: false
         type: string
-        default: Next
+        default: SukiSU
       kernelsu_branch:
         required: true
         type: string
-        default: Stable
+        default: Stable(标准)
       version:
         required: false
         type: string
@@ -37,11 +33,21 @@ on:
         required: false
         type: boolean
         default: false
+      lz4_upd:
+        description: "是否升级LZ4算法至1.10.0?"
+        required: true
+        type: boolean
+        default: true
+      use_O3:
+        description: "是否开启O3编译优化?"
+        required: true
+        type: boolean
+        default: true
       BBG:
         description: '是否启用内核层面阻止对关键分区/设备节点的非法写入(LSM)？'
         required: true
         type: boolean
-        default: false
+        default: true
 
 
 jobs:
@@ -77,15 +83,16 @@ jobs:
     uses: ./.github/workflows/gki-kernel.yml
     secrets: inherit
     with:
-      make_release: ${{ inputs.make_release || false }}
       android_version: "android15"
       kernel_version: "6.6"
       sub_level: ${{ matrix.sub_level }}
       os_patch_level: ${{ matrix.os_patch_level }}
-      kernelsu_variant: ${{ inputs.kernelsu_variant || 'Next' }}
-      kernelsu_branch: ${{ inputs.kernelsu_branch || 'Dev' }}
-      version: ${{ inputs.version || '' }}
+      kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      kernelsu_branch: ${{ inputs.kernelsu_branch }}
+      version: ${{ inputs.version }}
       use_zram: ${{ inputs.use_zram }}
       use_kpm: ${{ inputs.use_kpm }}
       supp_op: ${{ inputs.supp_op }}
-      BBG: ${{ inputs.BBG || false }}
+      lz4_upd: ${{ inputs.lz4_upd }}
+      use_O3: ${{ inputs.use_O3 }}
+      BBG: ${{ inputs.BBG }}

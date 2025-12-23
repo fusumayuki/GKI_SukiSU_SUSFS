@@ -6,10 +6,6 @@ permissions:
 on:
   workflow_call: # This allows this workflow to be called from another workflow
     inputs:
-      make_release:
-        required: true
-        type: boolean
-        default: true
       android_version:
         required: true
         type: string
@@ -25,12 +21,11 @@ on:
       kernelsu_variant:
         required: true
         type: string
+        default: SukiSU
       kernelsu_branch:
         required: true
         type: string
-      # kernelsu_branch_other:
-      #   required: false
-      #   type: string
+        default: Stable(标准)
       revision:
         required: false
         type: string
@@ -44,15 +39,23 @@ on:
       use_kpm:
         required: true
         type: boolean
-        default: true
+        default: false
       supp_op:
         required: true
         type: boolean
         default: false
+      lz4_upd:
+        required: true
+        type: boolean
+        default: true
+      use_O3:
+        required: true
+        type: boolean
+        default: true
       BBG:
         required: true
         type: boolean
-        default: false
+        default: true
 jobs:
   build-kernel-kernelsu-susfs:
     runs-on: ubuntu-latest
@@ -85,20 +88,50 @@ jobs:
 
           echo "CONFIG set to: $CONFIG"
 
+      - name: Install LLVM/Clang 21
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt-get update
+
+      - name: Remove old Clang versions
+        run: |
+          # Remove specific old versions if present (example: 18)
+          sudo apt remove --yes --autoremove clang-18 clang-18-doc clang-format-18 clang-tidy-18 || true
+          # Optionally remove the unversioned meta-package if it points to an older series
+          sudo apt remove --yes --autoremove clang || true
+
+      - name: Reset alternatives to Clang 21
+        run: |
+          # Clean any old alternatives (clang-18, etc.)
+          sudo update-alternatives --remove-all clang || true
+          sudo update-alternatives --remove-all clang++ || true
+          # Register only Clang 21
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-21 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 100
+          sudo update-alternatives --set clang /usr/bin/clang-21
+          sudo update-alternatives --set clang++ /usr/bin/clang++-21
+
+      - name: Check Clang version
+        run: |
+          clang --version
+          clang++ --version
+
       # Install ccache
       - name: 安装 ccache
-        run: sudo apt update && sudo apt upgrade -y && sudo apt install -y ccache python3 git curl
+        run: sudo apt update && sudo apt upgrade -y && sudo apt install -y ccache python3 git curl build-essential libssl-dev bison flex libelf-dev dwarves
 
       - name: 配置 ccache
         run: |
           mkdir -p ~/.cache/bazel
           ccache --version
-          ccache --max-size=2G
+          ccache --max-size=3G
           ccache --set-config=compression=true
           echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
 
       - name: 从缓存中还原ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.ccache
           key: ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-${{ github.sha }}
@@ -107,7 +140,7 @@ jobs:
 
       - name: 缓存工具链
         id: cache-toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             kernel-build-tools
@@ -119,7 +152,7 @@ jobs:
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           AOSP_MIRROR=https://android.googlesource.com
-          BRANCH=main-kernel-build-2024
+          BRANCH=main-kernel-2025
           git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools
           git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg
 
@@ -130,8 +163,6 @@ jobs:
           echo "UNPACK_BOOTIMG=$GITHUB_WORKSPACE/mkbootimg/unpack_bootimg.py" >> $GITHUB_ENV
 
       - name: 密钥设置——已经过mkppk修改
-        env:
-          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
         run: |
             openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 > ./kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem
             echo "BOOT_SIGN_KEY_PATH=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem" >> $GITHUB_ENV
@@ -155,11 +186,13 @@ jobs:
           echo "Using branch for SUSFS: $SUSFS_BRANCH"
 
           # Clone repositories using the branch names
-          git clone https://github.com/WildPlusKernel/AnyKernel3.git -b "$ANYKERNEL_BRANCH"
-          git clone https://github.com/ShirkNeko/susfs4ksu.git -b "$SUSFS_BRANCH"
+          git clone https://github.com/WildKernels/AnyKernel3.git -b "$ANYKERNEL_BRANCH"
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
           git clone https://github.com/Tools-cx-app/kernel_patches.git
-          # Sukisu的补丁仓库
-          git clone https://github.com/ShirkNeko/SukiSU_patch.git
+          # SukiSU 的补丁仓库
+          git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
+          # LZ4 1.10.0 的补丁仓库
+          git clone https://github.com/zzh20188/GKI_KernelSU_SUSFS.git zzh_patch
           
       - name: 设置 CONFIG 环境变量
         run: |
@@ -180,7 +213,7 @@ jobs:
           # Initialize and sync kernel source
           echo "Initializing and syncing kernel source..."
           FORMATTED_BRANCH="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
-          $REPO init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${FORMATTED_BRANCH} --repo-rev=v2.16
+          $REPO init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${FORMATTED_BRANCH}
           REMOTE_BRANCH=$(git ls-remote https://android.googlesource.com/kernel/common ${FORMATTED_BRANCH})
           DEFAULT_MANIFEST_PATH=.repo/manifests/default.xml
           # Check if branch is deprecated
@@ -230,7 +263,7 @@ jobs:
               case "$variant_input" in
                 "Official" | "MKSU") echo "BRANCH=-s main" >> $GITHUB_ENV ;;
                 "Next")              echo "BRANCH=-s next-susfs-dev" >> $GITHUB_ENV ;;
-                "SukiSU")           echo "BRANCH=-s builtin" >> $GITHUB_ENV ;;
+                "SukiSU")           echo "BRANCH=-s tmp-builtin" >> $GITHUB_ENV ;;
                 *) 
                   echo "错误：未定义开发分支的变体 '$variant_input'" >&2
                   exit 1
@@ -253,7 +286,7 @@ jobs:
             curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash $BRANCH
           elif [ "${{ inputs.kernelsu_variant }}" == "Next" ]; then
             echo "Adding KernelSU Next..."
-            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash $BRANCH
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next-susfs/kernel/setup.sh" | bash $BRANCH
           elif [ "${{ inputs.kernelsu_variant }}" == "MKSU" ]; then
             echo "Adding KernelSU MKSU..."
             curl -LSs "https://raw.githubusercontent.com/5ec1cff/KernelSU/main/kernel/setup.sh" | bash $BRANCH
@@ -391,6 +424,49 @@ jobs:
             echo "Applying hooks for SukiSU..."
           fi
 
+      - name: 升级LZ4算法至1.10.0
+        if: ${{ inputs.lz4_upd }}
+        run: |
+
+          echo "更改为配置目录: $CONFIG..."
+          cd "$CONFIG/common"
+          echo 'LZ4算法升级'
+          # 删除LZ4库旧有文件
+          files=(
+              "lib/lz4/lz4_compress.c"
+              "lib/lz4/lz4_decompress.c"
+              "lib/lz4/lz4defs.h"
+              "lib/lz4/lz4hc_compress.c"
+          )
+
+          for file in "${files[@]}"; do
+              if [ -e "$file" ]; then
+                  rm "$file"
+                  echo "$file 已删除"
+              else
+                  echo "$file 不存在"
+              fi
+          done
+
+          cp -r ../../zzh_patch/zram/lz4/* ./lib/lz4/
+          cp -r ../../zzh_patch/zram/include/linux/* ./include/linux/
+          cp -r ../../zzh_patch/zram/${{ inputs.kernel_version }}/lz4_1.10.0.patch ./
+
+          patch -p1 -F 3 --fuzz=5 < lz4_1.10.0.patch || true
+
+          # 检查文件是否存在
+          if [ -f "fs/f2fs/Makefile" ]; then
+              # 检查是否包含指定行
+              if ! grep -qF "f2fs-\$(CONFIG_F2FS_IOSTAT) += iostat.o" "fs/f2fs/Makefile"; then
+                  echo "f2fs-\$(CONFIG_F2FS_IOSTAT) += iostat.o" >> "fs/f2fs/Makefile"
+                  echo "已添加: f2fs-\$(CONFIG_F2FS_IOSTAT) += iostat.o"
+              else
+                  echo "文件已经包含: f2fs-\$(CONFIG_F2FS_IOSTAT) += iostat.o"
+              fi
+          else
+              echo "文件不存在: fs/f2fs/Makefile"
+          fi
+
       - name: 复制源文件 & 应用LZ4KD & ZSTDN补丁
         if: ${{ inputs.use_zram }}
         run: |
@@ -422,6 +498,48 @@ jobs:
           else
             cp ../../kernel_patches/69_hide_stuff.patch ./
             patch -p1 -F 3 < 69_hide_stuff.patch
+          fi
+
+      - name: 克隆性能补丁仓库
+        run: |
+          echo "=== 克隆性能补丁仓库 ==="
+          git clone https://github.com/WildKernels/kernel_patches.git Wild_kernel_patches --depth=1
+          ls -la Wild_kernel_patches/common/ || echo "Failed to clone Wild_kernel_patches"
+
+      - name: 应用性能优化补丁
+        run: |
+          echo "=== 应用性能优化补丁 ==="
+          cd "$CONFIG/common"
+          MIN_VERSION="5.16"
+
+          # 1. 优化内存操作
+          cp ../../Wild_kernel_patches/common/optimized_mem_operations.patch ./
+          patch -p1 --forward < optimized_mem_operations.patch || true
+          echo "[OK] Applied optimized_mem_operations.patch"
+
+          # 2. 文件结构体 8 字节对齐
+          cp ../../Wild_kernel_patches/common/file_struct_8bytes_align.patch ./
+          patch -p1 --forward < file_struct_8bytes_align.patch || true
+          echo "[OK] Applied file_struct_8bytes_align.patch"
+
+          # 3. 降低缓存压力
+          cp ../../Wild_kernel_patches/common/reduce_cache_pressure.patch ./
+          patch -p1 --forward < reduce_cache_pressure.patch || true
+          echo "[OK] Applied reduce_cache_pressure.patch"
+
+          # 4. 清除页面 16 字节对齐（内核版本检测）
+          CURRENT_VERSION="${{ inputs.kernel_version }}"
+          if [ "$(printf '%s\n' "$CURRENT_VERSION" "$MIN_VERSION" | sort -V | head -n1)" = "$CURRENT_VERSION" ]; then
+            echo "Kernel $CURRENT_VERSION < $MIN_VERSION, using original patch"
+            cp ../../Wild_kernel_patches/common/clear_page_16bytes_align.patch ./
+            patch -p1 --forward < clear_page_16bytes_align.patch || true
+            echo "[OK] Applied clear_page_16bytes_align.patch"
+          else
+            echo "Kernel $CURRENT_VERSION >= $MIN_VERSION, using __pi variant"
+            cp ../../Wild_kernel_patches/common/clear_page_16bytes_align.patch ./
+            sed -e 's/SYM_FUNC_START_PI(clear_page)/SYM_FUNC_START_PI(__pi_clear_page)/' clear_page_16bytes_align.patch > clear_page_16bytes_align__pi.patch
+            patch -p1 -F3 --forward < clear_page_16bytes_align__pi.patch || true
+            echo "[OK] Applied clear_page_16bytes_align__pi.patch"
           fi
 
       - name: LZ4KD & Lz4k_oplus配置
@@ -470,15 +588,8 @@ jobs:
             echo "CONFIG_CRYPTO_LZ4KD=y" >> "$CONFIG_FILE"
             echo "CONFIG_CRYPTO_842=y" >> "$CONFIG_FILE"
             echo "CONFIG_CRYPTO_LZ4K_OPLUS=y" >> "$CONFIG_FILE"
-            echo "CONFIG_ZRAM_WRITEBACK=y" >> "$CONFIG_FILE"
+            echo "CONFIG_ZRAM_WRITEBACK=n" >> "$CONFIG_FILE"
           fi
-
-      - name: 设置BBR为默认拥塞算法
-        if: ${{ inputs.set_defbbr }}
-        run: |
-          CONFIG_FILE="$CONFIG/common/arch/arm64/configs/gki_defconfig"
-          echo "Changing to configuration directory: $CONFIG_FILE..."
-          echo "CONFIG_DEFAULT_BBR=y" >> "$CONFIG_FILE"
            
       - name: 添加SUSFS配置设置
         run: |
@@ -499,22 +610,27 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           
-          # Add additional tmpfs config setting
+          # Add additional tmpfs config settings
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
 
-          # Add additional config setting
+          # Add additional network config settings
           echo "CONFIG_IP_NF_TARGET_TTL=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IP6_NF_TARGET_HL=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IP6_NF_MATCH_HL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_ECN=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TCP_ECN=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IPV6_ECN=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_NF_TARGET_ECN=y" >> ./common/arch/arm64/configs/gki_defconfig
 
-          # Add BBR Config
+          echo "CONFIG_TCP_CONG_BIC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TCP_CONG_WESTWOOD=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TCP_CONG_HTCP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TCP_CONG_CUBIC=y" >> ./common/arch/arm64/configs/gki_defconfig
+
           echo "CONFIG_TCP_CONG_ADVANCED=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_TCP_CONG_BIC=n" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_TCP_CONG_WESTWOOD=n" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_TCP_CONG_HTCP=n" >> ./common/arch/arm64/configs/gki_defconfig
 
           # Add SUSFS configuration settings
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -535,6 +651,7 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
           
           # Remove check_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
@@ -549,7 +666,7 @@ jobs:
             sed -i '$s|echo "\$res"|echo "${{ inputs.version }}"|' ./common/scripts/setlocalversion
           else
             echo "版本号为空，使用默认值"
-            sed -i '$s|echo "\$res"|echo "\$res-zakozakoooooo-1145141919"|' ./common/scripts/setlocalversion
+            sed -i '$s|echo "\$res"|echo "\$res-neko"|' ./common/scripts/setlocalversion
           fi
 
           # 如果你需要改构建时间,请把以下变量 CURRENT_TIME 修改为如下例子字符串,如:CURRENT_TIME="Sat Jun 07 06:29:29 UTC 2025"
@@ -576,6 +693,62 @@ jobs:
               sed -i '/^CONFIG_LOCALVERSION=/ s/="\([^"]*\)"/="${{ inputs.version }}"/' ./common/arch/arm64/configs/gki_defconfig
             fi
           fi
+
+      - name: 添加代理性能优化
+        run: |
+          cd "$CONFIG"
+          echo "启用代理优化..."
+          echo "CONFIG_BPF_STREAM_PARSER=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+          # 开启 ipset 支持
+          echo "CONFIG_IP_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_MAX=65534" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_IP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_MAC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETNET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_LIST_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP6_NF_NAT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+          # 开启 TPROXY 支持
+          echo "CONFIG_NETFILTER=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_ADVANCED=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XTABLES=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_TARGET_TPROXY=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_MATCH_SOCKET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_MATCH_MARK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_TARGET_MARK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_TARGET_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+      - name: 编译优化
+        if: ${{ inputs.use_O3 }}
+        run: |
+          cd "$CONFIG"
+          echo "启用 O3 编译优化..."
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+          echo "启用 Thin LTO 优化..."
+          echo "CONFIG_LTO=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_LTO_CLANG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_LTO_CLANG_THIN=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_OPTIMIZE_INLINING=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_CC_HAS_FAST_OPS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # debug 输出
+          tail -n 10 ./common/arch/arm64/configs/gki_defconfig
 
       - name: Build with retry
         uses: nick-fields/retry@v3
@@ -758,10 +931,32 @@ jobs:
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
           cp ./boot-lz4.img ../${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-boot-lz4.img
 
+      - name: 确定 KernelSU 的版本号
+        run: |
+          if [ "${{ inputs.kernelsu_variant }}" == "Next" ]; then
+            echo "This is the Next variant"
+            cd "$CONFIG/KernelSU"
+            git checkout stable
+            KSU_GIT_VERSION=$(git rev-list --count HEAD)
+            KSU_VERSION=$((10000 + KSU_GIT_VERSION + 200))
+            echo $KSU_VERSION
+            echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+          elif [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ]; then
+            echo "This is the SukiSU variant"
+            cd "$CONFIG/KernelSU"
+            git checkout main
+            KSU_GIT_VERSION=$(git rev-list --count HEAD)
+            KSU_VERSION=$((40000 + KSU_GIT_VERSION - 2815))
+            echo $KSU_VERSION
+            echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+          else
+            echo "Unknown variant"
+          fi
+
       - name: 上传编译资产
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.kernelsu_variant }}_kernel-${{ env.CONFIG }}
+          name: ${{ inputs.kernelsu_variant }}_kernel-${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ env.KSU_VERSION }}
           path: |
             *AnyKernel3.zip
             *.img
